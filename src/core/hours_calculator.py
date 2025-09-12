@@ -2,8 +2,9 @@
 Calculador de Horas según Normativa Argentina
 """
 
-from datetime import datetime
-from typing import Dict, List, Optional, Set
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Set, Tuple
+from zoneinfo import ZoneInfo  # stdlib (Python >=3.9)
 from config.default_config import DEFAULT_CONFIG
 
 
@@ -11,56 +12,79 @@ class ArgentineHoursCalculator:
     """Calculador de horas según normativa laboral argentina"""
 
     def __init__(self):
-        self.jornada_completa = DEFAULT_CONFIG['jornada_completa_horas']
-        self.hora_nocturna_inicio = DEFAULT_CONFIG['hora_nocturna_inicio']
-        self.hora_nocturna_fin = DEFAULT_CONFIG['hora_nocturna_fin']
-        self.sabado_limite = DEFAULT_CONFIG['sabado_limite_hora']
+        self.jornada_completa   = DEFAULT_CONFIG['jornada_completa_horas']
+        self.hora_nocturna_inicio = DEFAULT_CONFIG['hora_nocturna_inicio']  # ej. 21
+        self.hora_nocturna_fin    = DEFAULT_CONFIG['hora_nocturna_fin']    # ej. 6
+        self.sabado_limite      = DEFAULT_CONFIG['sabado_limite_hora']
         self.tolerancia_minutos = DEFAULT_CONFIG['tolerancia_minutos']
-        self.fragmento_minutos = DEFAULT_CONFIG['fragmento_minutos']
-        self.holiday_names = DEFAULT_CONFIG.get('holiday_names', {})
+        self.fragmento_minutos  = DEFAULT_CONFIG['fragmento_minutos']
+        self.holiday_names      = DEFAULT_CONFIG.get('holiday_names', {})
+        self.local_tz           = ZoneInfo(DEFAULT_CONFIG.get('local_timezone',
+                                                              'America/Argentina/Buenos_Aires'))
 
-    # -------------------- Helpers --------------------
+    # -------------------- Helpers de parsing / fechas --------------------
 
     def _get_ref_str(self, day_summary: Dict) -> str:
         ref = day_summary.get('referenceDate') or day_summary.get('date') or ''
         return ref[:10]
 
-    def _get_night_hours_from_summary(self, day_summary: Dict) -> float:
-        night_hours = 0.0
-        for cat in (day_summary.get('categorizedHours') or []):
-            name = (cat.get('category') or {}).get('name')
-            if name in ('NIGHT', 'NOCTURNA'):
-                try:
-                    night_hours += float(cat.get('hours') or 0)
-                except (TypeError, ValueError):
-                    pass
-        return night_hours
+    def _parse_iso_to_local(self, s: Optional[str]) -> Optional[datetime]:
+        """
+        Convierte ISO (con 'Z' u offset) a datetime **local** (naive).
+        Si no trae tz, se asume local.
+        """
+        if not s:
+            return None
+        s = s.replace('Z', '+00:00')  # normalizo 'Z'
+        try:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                return dt  # ya está en local
+            return dt.astimezone(self.local_tz).replace(tzinfo=None)
+        except Exception:
+            return None
 
-    def _get_start_end_iso(self, day_summary: Dict):
+    def _first_entry_pair_local(self, day_summary: Dict) -> Tuple[Optional[datetime], Optional[datetime]]:
+        """
+        Toma el primer START y el primer END de entries, los convierte a **local** y
+        devuelve (start_local, end_local). Maneja cruce de día si end <= start.
+        """
         start_iso = end_iso = None
         for e in (day_summary.get('entries') or []):
             if e.get('type') == 'START' and not start_iso:
-                start_iso = (e.get('time') or e.get('date') or '')[:19]
+                start_iso = e.get('time') or e.get('date')
             elif e.get('type') == 'END' and not end_iso:
-                end_iso = (e.get('time') or e.get('date') or '')[:19]
-        return start_iso, end_iso
+                end_iso = e.get('time') or e.get('date')
 
-    def _hhmm(self, iso: Optional[str]) -> Optional[str]:
-        if not iso:
-            return None
-        return iso[11:16]
+        s_dt = self._parse_iso_to_local(start_iso[:25] if start_iso else None)
+        e_dt = self._parse_iso_to_local(end_iso[:25] if end_iso else None)
+        if s_dt and e_dt and e_dt <= s_dt:
+            e_dt += timedelta(days=1)  # cruza medianoche
+        return s_dt, e_dt
 
-    def _crosses_into_holiday(self, day_summary: Dict, ref_str: str, holiday_dates: Set[str]) -> Optional[str]:
+    def _display_from_entries(self, day_summary: Dict) -> Tuple[str, str, str, str]:
         """
-        Si el END cae en un día distinto y ese día es feriado, devuelve esa fecha (YYYY-MM-DD).
-        De lo contrario, devuelve None.
+        Devuelve (start_date, start_hhmm, end_date, end_hhmm) usando ENTRIES en local.
+        Si faltan, devuelve strings vacíos anclados al ref_str.
         """
-        for e in (day_summary.get('entries') or []):
-            if e.get('type') == 'END':
-                end_iso = (e.get('time') or e.get('date') or '')[:10]
-                if end_iso and end_iso != ref_str and end_iso in holiday_dates:
-                    return end_iso
-        return None
+        ref_str = self._get_ref_str(day_summary)
+        s_dt, e_dt = self._first_entry_pair_local(day_summary)
+        if not (s_dt and e_dt):
+            return ref_str, "", ref_str, ""
+        return (
+            s_dt.strftime("%Y-%m-%d"),
+            s_dt.strftime("%H:%M"),
+            e_dt.strftime("%Y-%m-%d"),
+            e_dt.strftime("%H:%M"),
+        )
+
+    def _get_intervals_from_entries(self, day_summary: Dict) -> List[Tuple[datetime, datetime]]:
+        """
+        Devuelve [(start_local, end_local)] usando entries.
+        (Si quisieras soportar varios pares START/END, expandí acá).
+        """
+        s_dt, e_dt = self._first_entry_pair_local(day_summary)
+        return [(s_dt, e_dt)] if (s_dt and e_dt) else []
 
     def _get_holiday_name(self, date_str: str, day_summary: Dict) -> Optional[str]:
         # 1) si viene desde la API
@@ -71,16 +95,65 @@ class ArgentineHoursCalculator:
         # 2) si está en el config
         return self.holiday_names.get(date_str)
 
+    # -------------------- Nocturnas (intersección real 21–06) --------------------
+
+    def _intersect_hours(self, a_start: datetime, a_end: datetime,
+                         b_start: datetime, b_end: datetime) -> float:
+        start = max(a_start, b_start)
+        end = min(a_end, b_end)
+        return max(0.0, (end - start).total_seconds() / 3600)
+
+    def _compute_night_hours_from_intervals(self, intervals: List[Tuple[datetime, datetime]],
+                                            ref_dt: datetime) -> float:
+        """
+        Ventana nocturna anclada al **día de inicio** (ref_dt):
+        [hora_nocturna_inicio, hora_nocturna_fin) cruzando medianoche.
+        """
+        n_start = ref_dt.replace(hour=self.hora_nocturna_inicio, minute=0, second=0, microsecond=0)
+        n_end   = (ref_dt + timedelta(days=1)).replace(hour=self.hora_nocturna_fin, minute=0, second=0, microsecond=0)
+        total = 0.0
+        for s_dt, e_dt in intervals:
+            total += self._intersect_hours(s_dt, e_dt, n_start, n_end)
+        return round(total, 2)
+
+    def _get_night_hours_from_summary(self, day_summary: Dict) -> float:
+        """Fallback si no hay entries: usa categorizedHours si vinieran como NIGHT."""
+        night_hours = 0.0
+        for cat in (day_summary.get('categorizedHours') or []):
+            name = (cat.get('category') or {}).get('name')
+            if name in ('NIGHT', 'NOCTURNA'):
+                try:
+                    night_hours += float(cat.get('hours') or 0)
+                except (TypeError, ValueError):
+                    pass
+        return night_hours
+
+    # -------------------- Cruce a feriado (con fecha local de FIN) --------------------
+
+    def _crosses_into_holiday_local_end(self, day_summary: Dict,
+                                        ref_str: str,
+                                        holiday_dates: Set[str]) -> Optional[str]:
+        """
+        Si el END (en hora LOCAL) cae en un día distinto y ese día es feriado,
+        devuelve esa fecha (YYYY-MM-DD). Si no, None.
+        """
+        _, e_dt = self._first_entry_pair_local(day_summary)
+        if not e_dt:
+            return None
+        end_date_local = e_dt.strftime("%Y-%m-%d")
+        if end_date_local != ref_str and end_date_local in holiday_dates:
+            return end_date_local
+        return None
+
     # -------------------- Cálculo principal --------------------
 
-# -------------------- Cálculo principal --------------------
     def process_employee_data(self, day_summaries: List[Dict], employee_info: Dict,
-                            previous_pending_hours: float = 0,
-                            holidays: Optional[Set[str]] = None) -> Dict:
+                              previous_pending_hours: float = 0,
+                              holidays: Optional[Set[str]] = None) -> Dict:
 
         holiday_dates = set(holidays) if holidays else set(DEFAULT_CONFIG.get('holidays', []))
 
-        daily_data = []
+        daily_data: List[Dict] = []
         totals = {
             'total_days_worked': 0.0,
             'total_hours_worked': 0.0,
@@ -88,6 +161,7 @@ class ArgentineHoursCalculator:
             'total_extra_hours_50': 0.0,
             'total_extra_hours_100': 0.0,
             'total_night_hours': 0.0,
+            'total_holiday_hours': 0.0,          # NUEVO
             'total_pending_hours': float(previous_pending_hours)
         }
 
@@ -97,82 +171,83 @@ class ArgentineHoursCalculator:
                 continue
             ref_dt = datetime.strptime(ref_str, '%Y-%m-%d')
 
-            hours_worked = float(day_summary.get('hours', {}).get('worked', 0) or day_summary.get('totalHours', 0) or 0)
+            hours_worked = float(day_summary.get('hours', {}).get('worked', 0)
+                                 or day_summary.get('totalHours', 0) or 0)
             is_holiday_api = bool(day_summary.get('holidays'))
-            has_time_off = bool(day_summary.get('timeOffRequests'))
-            has_absence = 'ABSENT' in (day_summary.get('incidences') or [])
-            is_rest_day = not bool(day_summary.get('isWorkday', True))  # ← FRANCO
+            has_time_off   = bool(day_summary.get('timeOffRequests'))
+            has_absence    = 'ABSENT' in (day_summary.get('incidences') or [])
+            is_rest_day    = not bool(day_summary.get('isWorkday', True))  # FRANCO
 
             if hours_worked == 0 and not has_time_off:
                 continue
 
-            # detecto cruce a feriado
-            end_holiday_str = self._crosses_into_holiday(day_summary, ref_str, holiday_dates)
+            # Feriado por fin local
+            end_holiday_str    = self._crosses_into_holiday_local_end(day_summary, ref_str, holiday_dates)
             is_ref_holiday_cfg = ref_str in holiday_dates
             is_out_holiday_cfg = bool(end_holiday_str)
 
-            # ¿a qué fecha asigno la fila?
-            if is_out_holiday_cfg:
-                out_date_str = end_holiday_str          # 22→06 y el 06 es feriado ⇒ asigno al fin
-            else:
-                out_date_str = ref_str                   # franco nocturno ⇒ asigno al inicio
+            # ¿A qué fecha imputo?
+            out_date_str = end_holiday_str if is_out_holiday_cfg else ref_str
 
-            # ¿es feriado para tasa 100%?
+            # ¿Es feriado para tasa 100%?
             is_holiday_output = is_holiday_api or is_ref_holiday_cfg or is_out_holiday_cfg
             holiday_name = None
             if is_holiday_output:
                 holiday_name = self._get_holiday_name(out_date_str, day_summary) or \
-                            self._get_holiday_name(ref_str, day_summary)
+                               self._get_holiday_name(ref_str, day_summary)
 
-            # distribución de horas
-            night_hours = self._get_night_hours_from_summary(day_summary)
+            # Intervalos (from ENTRIES en local)
+            intervals = self._get_intervals_from_entries(day_summary)
+
+            # Nocturnas reales
+            night_hours = self._compute_night_hours_from_intervals(intervals, ref_dt) \
+                          if intervals else self._get_night_hours_from_summary(day_summary)
+
+            # Horas “feriado” (solo si es feriado, no domingos)
+            holiday_hours = hours_worked if is_holiday_output else 0.0
+
+            # Distribución (se mantiene la lógica que ya tenías)
             if is_holiday_output:
-                # Feriado (del día o por cruce) ⇒ 100%
                 day_hours = {
                     'hours_worked': hours_worked, 'regular_hours': 0.0,
                     'extra_hours_50': 0.0, 'extra_hours_100': hours_worked,
                     'night_hours': night_hours, 'pending_hours': 0.0
                 }
             elif is_rest_day and hours_worked > 0:
-                # ← NUEVO: FRANCO TRABAJADO ⇒ TODO AL 100%
                 day_hours = {
                     'hours_worked': hours_worked, 'regular_hours': 0.0,
                     'extra_hours_50': 0.0, 'extra_hours_100': hours_worked,
                     'night_hours': night_hours, 'pending_hours': 0.0
                 }
             else:
-                # Día laborable normal
                 day_hours = self.calculate_hour_distribution(
                     hours_worked=hours_worked,
-                    date=ref_dt,  # distribución por el día de INICIO (franco nocturno)
+                    date=ref_dt,
                     is_holiday=False,
                     has_time_off=has_time_off,
                     night_hours=night_hours
                 )
 
-            # acumulo totales
+            # TOTALES
             if hours_worked > 0:
-                totals['total_days_worked'] += 1
-                totals['total_hours_worked'] += day_hours['hours_worked']
-                totals['total_regular_hours'] += day_hours['regular_hours']
-                totals['total_extra_hours_50'] += day_hours['extra_hours_50']
+                totals['total_days_worked']     += 1
+                totals['total_hours_worked']    += day_hours['hours_worked']
+                totals['total_regular_hours']   += day_hours['regular_hours']
+                totals['total_extra_hours_50']  += day_hours['extra_hours_50']
                 totals['total_extra_hours_100'] += day_hours['extra_hours_100']
-                totals['total_night_hours'] += day_hours['night_hours']
+                totals['total_night_hours']     += day_hours['night_hours']
+                totals['total_holiday_hours']   += holiday_hours
                 if not has_time_off and not has_absence:
                     totals['total_pending_hours'] += day_hours['pending_hours']
 
-            # explicación para la hoja
-            start_iso, end_iso = self._get_start_end_iso(day_summary)
-            start_d = (start_iso[:10] if start_iso else ref_str)
-            end_d = (end_iso[:10] if end_iso else ref_str)
-            start_h = self._hhmm(start_iso) or ''
-            end_h = self._hhmm(end_iso) or ''
-
+            # ---- Nota (horarios locales) ----
+            disp_start_d, disp_start_h, disp_end_d, disp_end_h = self._display_from_entries(day_summary)
             exp_parts = []
-            if start_iso or end_iso:
-                exp_parts.append(f"Inicio {start_d} {start_h} → Fin {end_d} {end_h}.")
+            if disp_start_h or disp_end_h:
+                exp_parts.append(f"Inicio {disp_start_d} {disp_start_h} → Fin {disp_end_d} {disp_end_h}.")
             else:
                 exp_parts.append("Sin marcajes, se usa resumen del día.")
+            exp_parts.append("Imputado al día de inicio del turno.")
 
             if is_out_holiday_cfg:
                 exp_parts.append(
@@ -184,9 +259,7 @@ class ArgentineHoursCalculator:
                     f"Feriado {holiday_name or 'sin nombre'} ⇒ {hours_worked:.2f}h al 100%."
                 )
             elif is_rest_day:
-                exp_parts.append(
-                    f"Franco trabajado (día de descanso) ⇒ {hours_worked:.2f}h al 100%."
-                )
+                exp_parts.append(f"Franco trabajado (día de descanso) ⇒ {hours_worked:.2f}h al 100%.")
             else:
                 dow = ref_dt.weekday()
                 if dow == 6:
@@ -208,10 +281,9 @@ class ArgentineHoursCalculator:
                             f"Lun–Vie: 8h regulares + {min(extra,2):.2f}h 50% + {max(0, extra-2):.2f}h 100%."
                         )
 
-            # nota de cálculo
             calc_note = " ".join(exp_parts)
 
-            # fila diaria
+            # Fila diaria
             daily_data.append({
                 'employee_id': employee_info.get('employeeInternalId'),
                 'date': out_date_str,
@@ -221,13 +293,17 @@ class ArgentineHoursCalculator:
                 'extra_hours_50': day_hours['extra_hours_50'],
                 'extra_hours_100': day_hours['extra_hours_100'],
                 'night_hours': day_hours['night_hours'],
+                'holiday_hours': round(holiday_hours, 2),               # NUEVO
                 'pending_hours': day_hours['pending_hours'] if not (has_time_off or has_absence) else 0.0,
-                'is_holiday': is_holiday_output,          # franco ≠ feriado ⇒ queda en "No"
+                'is_holiday': is_holiday_output,
                 'holiday_name': holiday_name,
+                'is_rest_day': bool(is_rest_day),                        # NUEVO
                 'has_time_off': has_time_off,
                 'time_off_name': (day_summary.get('timeOffRequests') or [{}])[0].get('name') if has_time_off else None,
                 'has_absence': has_absence,
                 'is_full_time': day_hours['hours_worked'] >= self.jornada_completa,
+                'shift_start': f"{disp_start_d} {disp_start_h}".strip(), # NUEVO
+                'shift_end':   f"{disp_end_d} {disp_end_h}".strip(),     # NUEVO
                 'calc_note': calc_note,
             })
 
@@ -245,7 +321,7 @@ class ArgentineHoursCalculator:
             'compensations': compensations
         }
 
-    # -------------------- Distribución estándar --------------------
+    # -------------------- Distribución estándar (tu lógica actual) --------------------
 
     def calculate_hour_distribution(self, hours_worked: float, date: datetime,
                                     is_holiday: bool = False, has_time_off: bool = False,

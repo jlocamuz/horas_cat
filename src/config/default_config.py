@@ -57,6 +57,8 @@ DEFAULT_CONFIG = {
     'api_key': 'NTgyNTM5NTpuYzhJSXFQNEUzeXZNcndpNzVCR3ZJYm4wTkJ2aWpXTg==',
     'base_url': 'https://api-prod.humand.co/public/api/v1',
 
+    "local_timezone": "America/Argentina/Buenos_Aires",
+
     # Jornada
     'jornada_completa_horas': 8,
     'tolerancia_minutos': 20,
@@ -111,3 +113,5 @@ API_ENDPOINTS = {
     'time_tracking_entries': '/time-tracking/entries',
     'day_summaries': '/time-tracking/day-summaries'
 }
+
+
