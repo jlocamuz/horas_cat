@@ -59,6 +59,8 @@ DEFAULT_CONFIG = {
 
     "local_timezone": "America/Argentina/Buenos_Aires",
 
+    "extras_al_50": 4,
+
     # Jornada
     'jornada_completa_horas': 8,
     'tolerancia_minutos': 20,

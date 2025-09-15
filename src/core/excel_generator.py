@@ -16,12 +16,14 @@ class ExcelReportGenerator:
         self.output_dir = os.path.expanduser(DEFAULT_CONFIG['output_directory'])
         self.filename_format = DEFAULT_CONFIG['filename_format']
 
+        # Estilos
         self.header_font = Font(bold=True, color="FFFFFF")
         self.header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
         self.regular_fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
         self.extra_50_fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
         self.extra_100_fill = PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid")
         self.night_fill = PatternFill(start_color="D1ECF1", end_color="D1ECF1", fill_type="solid")
+        self.holiday_fill = PatternFill(start_color="D6EAF8", end_color="D6EAF8", fill_type="solid")
         self.pending_fill = PatternFill(start_color="F5C6CB", end_color="F5C6CB", fill_type="solid")
 
         self.thin_border = Border(
@@ -55,9 +57,9 @@ class ExcelReportGenerator:
 
     def _create_summary_sheet(self, wb: Workbook, processed_data: Dict, start_date: str, end_date: str):
         """
-        Resumen Consolidado (reducido):
-        ID Empleado | Nombre | Apellido | Total Horas | Horas Regulares | Horas Extra 50% |
-        Horas Extra 100% | Horas Nocturnas | Horas Feriado
+        Resumen Consolidado:
+        Solo columnas: ID Empleado, Nombre, Apellido, Total Horas, Horas Regulares,
+        Horas Extra 50%, Horas Extra 100%, Horas Nocturnas, Horas Feriado.
         """
         ws = wb.create_sheet("Resumen Consolidado")
         ws['A1'] = "REPORTE DE ASISTENCIA - RESUMEN CONSOLIDADO"
@@ -81,25 +83,18 @@ class ExcelReportGenerator:
         row = 6
         for emp in processed_data.values():
             info = emp['employee_info']
-            totals = emp.get('totals', {})
-
-            # Si no viene 'total_holiday_hours' en totals, lo calculo desde daily_data
-            total_holiday_hours = totals.get('total_holiday_hours')
-            if total_holiday_hours is None:
-                total_holiday_hours = round(sum(d.get('holiday_hours', 0.0) for d in emp.get('daily_data', [])), 2)
-
+            totals = emp['totals']
             data_row = [
-                info.get('employeeInternalId',''),
-                info.get('firstName',''),
-                info.get('lastName',''),
-                round(totals.get('total_hours_worked', 0), 2),
-                round(totals.get('total_regular_hours', 0), 2),
-                round(totals.get('total_extra_hours_50', 0), 2),
-                round(totals.get('total_extra_hours_100', 0), 2),
-                round(totals.get('total_night_hours', 0), 2),
-                round(total_holiday_hours, 2),
+                info.get('employeeInternalId', ''),
+                info.get('firstName', ''),
+                info.get('lastName', ''),
+                round(totals.get('total_hours_worked', 0.0), 2),
+                round(totals.get('total_regular_hours', 0.0), 2),
+                round(totals.get('total_extra_hours_50', 0.0), 2),
+                round(totals.get('total_extra_hours_100', 0.0), 2),
+                round(totals.get('total_night_hours', 0.0), 2),
+                round(totals.get('total_holiday_hours', 0.0), 2),
             ]
-
             for col, value in enumerate(data_row, 1):
                 c = ws.cell(row=row, column=col, value=value)
                 c.border = self.thin_border
@@ -107,26 +102,26 @@ class ExcelReportGenerator:
                 elif col == 6: c.fill = self.extra_50_fill
                 elif col == 7: c.fill = self.extra_100_fill
                 elif col == 8: c.fill = self.night_fill
+                elif col == 9: c.fill = self.holiday_fill
             row += 1
 
-        for col in range(1, len(headers)+1):
-            ws.column_dimensions[get_column_letter(col)].width = 16
+        for col in range(1, len(headers) + 1):
+            ws.column_dimensions[get_column_letter(col)].width = 17
 
         total_row = row + 1
         ws.cell(row=total_row, column=1, value="TOTALES").font = Font(bold=True)
-        # Sumar desde columna 4 (Total Horas) hasta última
-        for col in range(4, len(headers)+1):
-            total_formula = f"=SUM({get_column_letter(col)}6:{get_column_letter(col)}{row-1})"
+        # Sumar desde "Total Horas" (col 4) hasta "Horas Feriado" (col 9)
+        for col in range(4, 10):
+            col_letter = get_column_letter(col)
+            total_formula = f"=SUM({col_letter}6:{col_letter}{row - 1})"
             c = ws.cell(row=total_row, column=col, value=total_formula)
             c.font = Font(bold=True)
             c.border = self.thin_border
 
     def _create_daily_sheet(self, wb: Workbook, processed_data: Dict, start_date: str, end_date: str):
         """
-        Detalle Diario + columnas nuevas:
-        - Inicio Turno, Fin Turno
-        - Día Franco (TRUE/FALSE)
-        - Horas Feriado
+        Detalle Diario:
+        Agrega Inicio Turno, Fin Turno, Es Franco, Horas Feriado.
         """
         ws = wb.create_sheet("Detalle Diario")
         ws['A1'] = "DETALLE DIARIO DE ASISTENCIA"
@@ -136,12 +131,13 @@ class ExcelReportGenerator:
             ws[f'A{row}'].font = Font(bold=True, size=12)
 
         headers = [
-            'ID Empleado','Nombre','Apellido','Fecha','Día',
-            'Inicio Turno','Fin Turno','Día Franco',
-            'Horas Trabajadas','Horas Regulares','Horas Extra 50%','Horas Extra 100%','Horas Nocturnas',
-            'Horas Feriado','Horas Pendientes','Es Feriado','Nombre Feriado',
-            'Tiene Licencia','Tipo Licencia','Tiene Ausencia','Observaciones',
-            'Cálculo (explicación)'
+            'ID Empleado', 'Nombre', 'Apellido', 'Fecha', 'Día',
+            'Inicio Turno', 'Fin Turno', 'Es Franco',             # NUEVOS
+            'Horas Trabajadas', 'Horas Regulares', 'Horas Extra 50%',
+            'Horas Extra 100%', 'Horas Nocturnas', 'Horas Feriado',  # NUEVO
+            'Horas Pendientes', 'Es Feriado', 'Nombre Feriado',
+            'Tiene Licencia', 'Tipo Licencia', 'Tiene Ausencia',
+            'Observaciones', 'Cálculo (explicación)'
         ]
         for col, header in enumerate(headers, 1):
             c = ws.cell(row=5, column=col, value=header)
@@ -163,62 +159,63 @@ class ExcelReportGenerator:
                     observations.append("Ausencia")
                 if d.get('pending_hours', 0) > 0:
                     observations.append(f"{d['pending_hours']:.1f}h pendientes")
-                if d.get('day_of_week') in ['Sábado','Domingo']:
+                if d.get('day_of_week') in ['Sábado', 'Domingo']:
                     observations.append("Fin de semana")
 
                 data_row = [
-                    info.get('employeeInternalId',''),
-                    info.get('firstName',''),
-                    info.get('lastName',''),
-                    d.get('date',''),
-                    d.get('day_of_week',''),
-                    d.get('shift_start',''),                 # NUEVO
-                    d.get('shift_end',''),                   # NUEVO
-                    'TRUE' if d.get('is_rest_day') else 'FALSE',  # NUEVO
-                    round(d.get('hours_worked',0),2),
-                    round(d.get('regular_hours',0),2),
-                    round(d.get('extra_hours_50',0),2),
-                    round(d.get('extra_hours_100',0),2),
-                    round(d.get('night_hours',0),2),
-                    round(d.get('holiday_hours',0),2),       # NUEVO
-                    round(d.get('pending_hours',0),2),
+                    info.get('employeeInternalId', ''),
+                    info.get('firstName', ''),
+                    info.get('lastName', ''),
+                    d.get('date', ''),
+                    d.get('day_of_week', ''),
+                    d.get('shift_start', ''),                      # NUEVO
+                    d.get('shift_end', ''),                        # NUEVO
+                    'Sí' if d.get('is_rest_day') else 'No',        # NUEVO
+                    round(d.get('hours_worked', 0.0), 2),
+                    round(d.get('regular_hours', 0.0), 2),
+                    round(d.get('extra_hours_50', 0.0), 2),
+                    round(d.get('extra_hours_100', 0.0), 2),
+                    round(d.get('night_hours', 0.0), 2),
+                    round(d.get('holiday_hours', 0.0), 2),         # NUEVO
+                    round(d.get('pending_hours', 0.0), 2),
                     'Sí' if d.get('is_holiday') else 'No',
                     d.get('holiday_name') or '',
                     'Sí' if d.get('has_time_off') else 'No',
                     d.get('time_off_name') or '',
                     'Sí' if d.get('has_absence') else 'No',
                     ', '.join(observations) if observations else '',
-                    d.get('calc_note','')
+                    d.get('calc_note', '')
                 ]
 
                 for col, value in enumerate(data_row, 1):
                     c = ws.cell(row=row, column=col, value=value)
                     c.border = self.thin_border
-                    if col == 10: c.fill = self.regular_fill         # Horas Regulares
-                    elif col == 11: c.fill = self.extra_50_fill       # Horas Extra 50
-                    elif col == 12: c.fill = self.extra_100_fill      # Horas Extra 100
-                    elif col == 13: c.fill = self.night_fill          # Nocturnas
-                    elif col == 15: c.fill = self.pending_fill        # Pendientes
-                    # Sombreado rápido por fin de semana / feriado
-                    if d.get('day_of_week') in ['Sábado','Domingo']:
+                    # Colores por métricas
+                    if col == 10: c.fill = self.regular_fill       # Horas Regulares
+                    elif col == 11: c.fill = self.extra_50_fill    # Extra 50
+                    elif col == 12: c.fill = self.extra_100_fill   # Extra 100
+                    elif col == 13: c.fill = self.night_fill       # Nocturnas
+                    elif col == 14: c.fill = self.holiday_fill     # Horas Feriado
+                    elif col == 15: c.fill = self.pending_fill     # Pendientes
+
+                    # sombreado rápido por fin de semana / feriado
+                    if d.get('day_of_week') in ['Sábado', 'Domingo']:
                         c.fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
                     elif d.get('is_holiday'):
                         c.fill = PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid")
                 row += 1
 
-        # Anchos y wrap para columnas largas
-        for col in range(1, len(headers)+1):
-            width = 12
-            if col in [17, 21, 22]:  # Nombre feriado, Observaciones, Explicación
+        # Anchos y wrap
+        for col in range(1, len(headers) + 1):
+            width = 14
+            # Nombre Feriado (col 16), Observaciones (col 21), Explicación (col 22)
+            if col in [16, 21, 22]:
                 width = 28 if col == 21 else (55 if col == 22 else 22)
-            if col in [6, 7]:  # Inicio/Fin turno
-                width = 18
             ws.column_dimensions[get_column_letter(col)].width = width
 
-        # Wrap text en Observaciones y Explicación
         for r in range(6, row):
-            ws.cell(row=r, column=21).alignment = Alignment(wrap_text=True, vertical='top')
-            ws.cell(row=r, column=22).alignment = Alignment(wrap_text=True, vertical='top')
+            ws.cell(row=r, column=21).alignment = Alignment(wrap_text=True, vertical='top')  # Observaciones
+            ws.cell(row=r, column=22).alignment = Alignment(wrap_text=True, vertical='top')  # Explicación
 
     def _create_statistics_sheet(self, wb: Workbook, processed_data: Dict, start_date: str, end_date: str):
         ws = wb.create_sheet("Estadísticas")
@@ -227,40 +224,40 @@ class ExcelReportGenerator:
         ws['A3'] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
         for row in range(1, 4):
             ws[f'A{row}'].font = Font(bold=True, size=12)
-        # (Espacio para gráficos si luego los agregás)
+        # Espacio para gráficos/indicadores si luego querés agregarlos.
 
     def _create_config_sheet(self, wb: Workbook, start_date: str, end_date: str):
         ws = wb.create_sheet("Configuración")
         ws['A1'] = "CONFIGURACIÓN DEL SISTEMA"
         ws['A2'] = "Parámetros utilizados para el reporte"
-        ws['A3'] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
-        for row in range(1, 4):
+        ws['A3'] = f"Período: {start_date} al {end_date}"
+        ws['A4'] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        for row in range(1, 5):
             ws[f'A{row}'].font = Font(bold=True, size=12)
 
-        # Parámetros básicos
-        params = [
-            ("Jornada completa (h)", DEFAULT_CONFIG.get('jornada_completa_horas')),
-            ("Inicio horario nocturno", DEFAULT_CONFIG.get('hora_nocturna_inicio')),
-            ("Fin horario nocturno", DEFAULT_CONFIG.get('hora_nocturna_fin')),
-            ("Límite sábado", DEFAULT_CONFIG.get('sabado_limite_hora')),
-            ("Tolerancia (min)", DEFAULT_CONFIG.get('tolerancia_minutos')),
-            ("Fragmento (min)", DEFAULT_CONFIG.get('fragmento_minutos')),
-            ("Zona horaria", DEFAULT_CONFIG.get('local_timezone', 'America/Argentina/Buenos_Aires')),
-            ("Directorio salida", DEFAULT_CONFIG.get('output_directory')),
-            ("Formato de archivo", DEFAULT_CONFIG.get('filename_format')),
+        # Imprime algunos parámetros clave
+        rows = [
+            ("output_directory", DEFAULT_CONFIG.get('output_directory', '')),
+            ("filename_format", DEFAULT_CONFIG.get('filename_format', '')),
+            ("extras_al_50", DEFAULT_CONFIG.get("extras_al_50", 2)),
+            ("hora_nocturna_inicio", DEFAULT_CONFIG.get('hora_nocturna_inicio', 21)),
+            ("hora_nocturna_fin", DEFAULT_CONFIG.get('hora_nocturna_fin', 6)),
+            ("sabado_limite_hora", DEFAULT_CONFIG.get('sabado_limite_hora', 13)),
+            ("local_timezone", DEFAULT_CONFIG.get('local_timezone', 'America/Argentina/Buenos_Aires')),
         ]
 
-        ws.append(())  # fila en blanco
-        start_row = ws.max_row + 1
-        ws.cell(row=start_row, column=1, value="Clave").font = self.header_font
-        ws.cell(row=start_row, column=2, value="Valor").font = self.header_font
-        for c in (1, 2):
-            ws.cell(row=start_row, column=c).fill = self.header_fill
-            ws.cell(row=start_row, column=c).border = self.thin_border
-            ws.cell(row=start_row, column=c).alignment = self.center_alignment
+        start_row = 6
+        ws['A5'] = "Clave"
+        ws['B5'] = "Valor"
+        ws['A5'].font = ws['B5'].font = self.header_font
+        ws['A5'].fill = ws['B5'].fill = self.header_fill
+        ws['A5'].alignment = ws['B5'].alignment = self.center_alignment
+        ws['A5'].border = ws['B5'].border = self.thin_border
 
-        r = start_row + 1
-        for k, v in params:
-            ws.cell(row=r, column=1, value=k).border = self.thin_border
-            ws.cell(row=r, column=2, value=str(v)).border = self.thin_border
-            r += 1
+        for i, (k, v) in enumerate(rows, start=start_row):
+            a = ws.cell(row=i, column=1, value=k)
+            b = ws.cell(row=i, column=2, value=v)
+            a.border = b.border = self.thin_border
+
+        ws.column_dimensions[get_column_letter(1)].width = 28
+        ws.column_dimensions[get_column_letter(2)].width = 55

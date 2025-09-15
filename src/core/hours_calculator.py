@@ -12,15 +12,16 @@ class ArgentineHoursCalculator:
     """Calculador de horas según normativa laboral argentina"""
 
     def __init__(self):
-        self.jornada_completa   = DEFAULT_CONFIG['jornada_completa_horas']
+        self.jornada_completa     = DEFAULT_CONFIG['jornada_completa_horas']
         self.hora_nocturna_inicio = DEFAULT_CONFIG['hora_nocturna_inicio']  # ej. 21
         self.hora_nocturna_fin    = DEFAULT_CONFIG['hora_nocturna_fin']    # ej. 6
-        self.sabado_limite      = DEFAULT_CONFIG['sabado_limite_hora']
-        self.tolerancia_minutos = DEFAULT_CONFIG['tolerancia_minutos']
-        self.fragmento_minutos  = DEFAULT_CONFIG['fragmento_minutos']
-        self.holiday_names      = DEFAULT_CONFIG.get('holiday_names', {})
-        self.local_tz           = ZoneInfo(DEFAULT_CONFIG.get('local_timezone',
-                                                              'America/Argentina/Buenos_Aires'))
+        self.sabado_limite        = DEFAULT_CONFIG.get('sabado_limite_hora', 13)
+        self.tolerancia_minutos   = DEFAULT_CONFIG['tolerancia_minutos']
+        self.fragmento_minutos    = DEFAULT_CONFIG['fragmento_minutos']
+        self.holiday_names        = DEFAULT_CONFIG.get('holiday_names', {})
+        self.local_tz             = ZoneInfo(DEFAULT_CONFIG.get('local_timezone',
+                                                                'America/Argentina/Buenos_Aires'))
+        self.extras_al_50         = DEFAULT_CONFIG.get("extras_al_50", 2)  # p.ej. 4 en ARM
 
     # -------------------- Helpers de parsing / fechas --------------------
 
@@ -95,7 +96,7 @@ class ArgentineHoursCalculator:
         # 2) si está en el config
         return self.holiday_names.get(date_str)
 
-    # -------------------- Nocturnas (intersección real 21–06) --------------------
+    # -------------------- Intersecciones / nocturnas --------------------
 
     def _intersect_hours(self, a_start: datetime, a_end: datetime,
                          b_start: datetime, b_end: datetime) -> float:
@@ -106,8 +107,7 @@ class ArgentineHoursCalculator:
     def _compute_night_hours_from_intervals(self, intervals: List[Tuple[datetime, datetime]],
                                             ref_dt: datetime) -> float:
         """
-        Ventana nocturna anclada al **día de inicio** (ref_dt):
-        [hora_nocturna_inicio, hora_nocturna_fin) cruzando medianoche.
+        Ventana nocturna anclada al **día de inicio** (ref_dt): 21:00 → 06:00 del día siguiente.
         """
         n_start = ref_dt.replace(hour=self.hora_nocturna_inicio, minute=0, second=0, microsecond=0)
         n_end   = (ref_dt + timedelta(days=1)).replace(hour=self.hora_nocturna_fin, minute=0, second=0, microsecond=0)
@@ -116,19 +116,7 @@ class ArgentineHoursCalculator:
             total += self._intersect_hours(s_dt, e_dt, n_start, n_end)
         return round(total, 2)
 
-    def _get_night_hours_from_summary(self, day_summary: Dict) -> float:
-        """Fallback si no hay entries: usa categorizedHours si vinieran como NIGHT."""
-        night_hours = 0.0
-        for cat in (day_summary.get('categorizedHours') or []):
-            name = (cat.get('category') or {}).get('name')
-            if name in ('NIGHT', 'NOCTURNA'):
-                try:
-                    night_hours += float(cat.get('hours') or 0)
-                except (TypeError, ValueError):
-                    pass
-        return night_hours
-
-    # -------------------- Cruce a feriado (con fecha local de FIN) --------------------
+    # -------------------- Feriado por FIN local --------------------
 
     def _crosses_into_holiday_local_end(self, day_summary: Dict,
                                         ref_str: str,
@@ -144,6 +132,32 @@ class ArgentineHoursCalculator:
         if end_date_local != ref_str and end_date_local in holiday_dates:
             return end_date_local
         return None
+
+    # -------------------- Distribución auxiliar (Lun–Vie) --------------------
+
+    def _weekday_distribution(self, hours: float, has_time_off: bool) -> Dict:
+        """
+        Reparte horas como Lun–Vie: regulares hasta jornada, luego extras 50% hasta
+        'extras_al_50' y el resto 100%.
+        """
+        if hours <= 0:
+            return {'regular': 0.0, 'extra50': 0.0, 'extra100': 0.0, 'pending': 0.0}
+
+        regular = min(hours, float(self.jornada_completa))
+        extra = max(0.0, hours - float(self.jornada_completa))
+
+        if extra <= self.extras_al_50:
+            e50 = extra
+            e100 = 0.0
+        else:
+            e50 = float(self.extras_al_50)
+            e100 = extra - float(self.extras_al_50)
+
+        pending = 0.0
+        if not has_time_off and hours < self.jornada_completa:
+            pending = float(self.jornada_completa) - hours
+
+        return {'regular': regular, 'extra50': e50, 'extra100': e100, 'pending': pending}
 
     # -------------------- Cálculo principal --------------------
 
@@ -170,6 +184,7 @@ class ArgentineHoursCalculator:
             if not ref_str:
                 continue
             ref_dt = datetime.strptime(ref_str, '%Y-%m-%d')
+            dow = ref_dt.weekday()  # 0=Lun … 6=Dom
 
             hours_worked = float(day_summary.get('hours', {}).get('worked', 0)
                                  or day_summary.get('totalHours', 0) or 0)
@@ -196,49 +211,87 @@ class ArgentineHoursCalculator:
                 holiday_name = self._get_holiday_name(out_date_str, day_summary) or \
                                self._get_holiday_name(ref_str, day_summary)
 
-            # Intervalos (from ENTRIES en local)
+            # Intervalos (from ENTRIES en local) y nocturnas
             intervals = self._get_intervals_from_entries(day_summary)
-
-            # Nocturnas reales
             night_hours = self._compute_night_hours_from_intervals(intervals, ref_dt) \
-                          if intervals else self._get_night_hours_from_summary(day_summary)
+                          if intervals else 0.0
 
-            # Horas “feriado” (solo si es feriado, no domingos)
+            # Horas “feriado” (solo si es feriado, no domingo)
             holiday_hours = hours_worked if is_holiday_output else 0.0
 
-            # Distribución (se mantiene la lógica que ya tenías)
+            # ---------------- Lógica de distribución ----------------
             if is_holiday_output:
-                day_hours = {
-                    'hours_worked': hours_worked, 'regular_hours': 0.0,
-                    'extra_hours_50': 0.0, 'extra_hours_100': hours_worked,
-                    'night_hours': night_hours, 'pending_hours': 0.0
-                }
-            elif is_rest_day and hours_worked > 0:
-                day_hours = {
-                    'hours_worked': hours_worked, 'regular_hours': 0.0,
-                    'extra_hours_50': 0.0, 'extra_hours_100': hours_worked,
-                    'night_hours': night_hours, 'pending_hours': 0.0
-                }
-            else:
-                day_hours = self.calculate_hour_distribution(
-                    hours_worked=hours_worked,
-                    date=ref_dt,
-                    is_holiday=False,
-                    has_time_off=has_time_off,
-                    night_hours=night_hours
-                )
+                # Feriado (del día o por cruce) ⇒ TODO 100%
+                regular_hours = 0.0
+                extra50 = 0.0
+                extra100 = hours_worked
+                pending = 0.0
 
-            # TOTALES
-            if hours_worked > 0:
-                totals['total_days_worked']     += 1
-                totals['total_hours_worked']    += day_hours['hours_worked']
-                totals['total_regular_hours']   += day_hours['regular_hours']
-                totals['total_extra_hours_50']  += day_hours['extra_hours_50']
-                totals['total_extra_hours_100'] += day_hours['extra_hours_100']
-                totals['total_night_hours']     += day_hours['night_hours']
-                totals['total_holiday_hours']   += holiday_hours
-                if not has_time_off and not has_absence:
-                    totals['total_pending_hours'] += day_hours['pending_hours']
+            elif is_rest_day and hours_worked > 0:
+                # Franco trabajado ⇒ TODO 100%
+                regular_hours = 0.0
+                extra50 = 0.0
+                extra100 = hours_worked
+                pending = 0.0
+
+            elif dow == 6:
+                # Domingo ⇒ TODO 100%
+                regular_hours = 0.0
+                extra50 = 0.0
+                extra100 = hours_worked
+                pending = 0.0
+
+            elif dow == 5:
+                # Sábado (NO feriado, NO franco):
+                #   - Porción después de 13:00 del sábado ⇒ 100%
+                #   - Porción en domingo (si el turno cruza) ⇒ 100%
+                #   - El resto (antes de 13) ⇒ distribución Lun–Vie
+                if intervals:
+                    sat_13 = ref_dt.replace(hour=self.sabado_limite, minute=0, second=0, microsecond=0)
+                    sat_24 = (ref_dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                    sat100 = 0.0
+                    for s_dt, e_dt in intervals:
+                        sat100 += self._intersect_hours(s_dt, e_dt, sat_13, sat_24)
+
+                    # Si el día siguiente es domingo, también es 100% (cualquier tramo en ese domingo)
+                    next_day = ref_dt + timedelta(days=1)
+                    sun100 = 0.0
+                    if next_day.weekday() == 6:  # domingo
+                        sun_start = next_day.replace(hour=0, minute=0, second=0, microsecond=0)
+                        sun_end   = (next_day + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                        for s_dt, e_dt in intervals:
+                            sun100 += self._intersect_hours(s_dt, e_dt, sun_start, sun_end)
+                    weekend_100 = round(sat100 + sun100, 2)
+                else:
+                    # Sin intervals (entries) no podemos cortar por 13:00 ⇒
+                    # lo más seguro: tratamos todo como Lun–Vie (antes de 13) y NO marcamos 100.
+                    weekend_100 = 0.0
+
+                base_hours = max(0.0, hours_worked - weekend_100)
+                dist = self._weekday_distribution(base_hours, has_time_off)
+                regular_hours = dist['regular']
+                extra50 = dist['extra50']
+                extra100 = dist['extra100'] + weekend_100
+                pending = dist['pending']
+
+            else:
+                # Lun–Vie normal
+                dist = self._weekday_distribution(hours_worked, has_time_off)
+                regular_hours = dist['regular']
+                extra50 = dist['extra50']
+                extra100 = dist['extra100']
+                pending = dist['pending']
+
+            # ---------------- Acumulo totales ----------------
+            totals['total_days_worked']     += 1
+            totals['total_hours_worked']    += hours_worked
+            totals['total_regular_hours']   += regular_hours
+            totals['total_extra_hours_50']  += extra50
+            totals['total_extra_hours_100'] += extra100
+            totals['total_night_hours']     += night_hours
+            totals['total_holiday_hours']   += holiday_hours
+            if not has_time_off and not has_absence:
+                totals['total_pending_hours'] += pending
 
             # ---- Nota (horarios locales) ----
             disp_start_d, disp_start_h, disp_end_d, disp_end_h = self._display_from_entries(day_summary)
@@ -259,27 +312,29 @@ class ArgentineHoursCalculator:
                     f"Feriado {holiday_name or 'sin nombre'} ⇒ {hours_worked:.2f}h al 100%."
                 )
             elif is_rest_day:
-                exp_parts.append(f"Franco trabajado (día de descanso) ⇒ {hours_worked:.2f}h al 100%.")
-            else:
-                dow = ref_dt.weekday()
-                if dow == 6:
-                    exp_parts.append("Domingo ⇒ todo al 100%.")
-                elif dow == 5:
-                    exp_parts.append("Sábado ⇒ todo al 50% (simplificado).")
+                exp_parts.append(f"Franco trabajado ⇒ {hours_worked:.2f}h al 100%.")
+            elif dow == 6:
+                exp_parts.append("Domingo ⇒ todo al 100%.")
+            elif dow == 5:
+                if intervals:
+                    exp_parts.append("Sábado: antes de 13:00 horario normal; desde 13:00 y domingo ⇒ 100%.")
                 else:
-                    if day_hours['hours_worked'] <= self.jornada_completa:
-                        if day_hours['pending_hours'] > 0:
-                            exp_parts.append(
-                                f"Lun–Vie: {day_hours['hours_worked']:.2f}h regulares + "
-                                f"{day_hours['pending_hours']:.2f}h pendientes."
-                            )
-                        else:
-                            exp_parts.append("Lun–Vie: horas dentro de la jornada regular.")
-                    else:
-                        extra = day_hours['hours_worked'] - self.jornada_completa
+                    exp_parts.append("Sábado sin marcajes (entries): se aplica horario normal.")
+            else:
+                if hours_worked <= self.jornada_completa:
+                    if pending > 0:
                         exp_parts.append(
-                            f"Lun–Vie: 8h regulares + {min(extra,2):.2f}h 50% + {max(0, extra-2):.2f}h 100%."
+                            f"Lun–Vie: {hours_worked:.2f}h regulares + {pending:.2f}h pendientes."
                         )
+                    else:
+                        exp_parts.append("Lun–Vie: horas dentro de la jornada regular.")
+                else:
+                    extra = hours_worked - self.jornada_completa
+                    e50_view = min(extra, float(self.extras_al_50))
+                    e100_view = max(0.0, extra - float(self.extras_al_50))
+                    exp_parts.append(
+                        f"Lun–Vie: 8h regulares + {e50_view:.2f}h 50% + {e100_view:.2f}h 100%."
+                    )
 
             calc_note = " ".join(exp_parts)
 
@@ -288,26 +343,26 @@ class ArgentineHoursCalculator:
                 'employee_id': employee_info.get('employeeInternalId'),
                 'date': out_date_str,
                 'day_of_week': self.get_day_of_week_spanish(datetime.strptime(out_date_str, '%Y-%m-%d')),
-                'hours_worked': day_hours['hours_worked'],
-                'regular_hours': day_hours['regular_hours'],
-                'extra_hours_50': day_hours['extra_hours_50'],
-                'extra_hours_100': day_hours['extra_hours_100'],
-                'night_hours': day_hours['night_hours'],
+                'hours_worked': round(hours_worked, 2),
+                'regular_hours': round(regular_hours, 2),
+                'extra_hours_50': round(extra50, 2),
+                'extra_hours_100': round(extra100, 2),
+                'night_hours': round(night_hours, 2),
                 'holiday_hours': round(holiday_hours, 2),               # NUEVO
-                'pending_hours': day_hours['pending_hours'] if not (has_time_off or has_absence) else 0.0,
+                'pending_hours': round(pending, 2) if not (has_time_off or has_absence) else 0.0,
                 'is_holiday': is_holiday_output,
                 'holiday_name': holiday_name,
                 'is_rest_day': bool(is_rest_day),                        # NUEVO
                 'has_time_off': has_time_off,
                 'time_off_name': (day_summary.get('timeOffRequests') or [{}])[0].get('name') if has_time_off else None,
                 'has_absence': has_absence,
-                'is_full_time': day_hours['hours_worked'] >= self.jornada_completa,
-                'shift_start': f"{disp_start_d} {disp_start_h}".strip(), # NUEVO
-                'shift_end':   f"{disp_end_d} {disp_end_h}".strip(),     # NUEVO
+                'is_full_time': hours_worked >= self.jornada_completa,
+                'shift_start': " ".join([disp_start_d, disp_start_h]).strip(),  # NUEVO
+                'shift_end':   " ".join([disp_end_d,   disp_end_h]).strip(),    # NUEVO
                 'calc_note': calc_note,
             })
 
-        # compensaciones
+        # compensaciones (si las usás)
         compensations = self.calculate_compensations(
             totals['total_extra_hours_50'],
             totals['total_extra_hours_100'],
@@ -321,11 +376,15 @@ class ArgentineHoursCalculator:
             'compensations': compensations
         }
 
-    # -------------------- Distribución estándar (tu lógica actual) --------------------
+    # -------------------- Distribución estándar (compat / no usada en sábado especial) --------------------
 
     def calculate_hour_distribution(self, hours_worked: float, date: datetime,
                                     is_holiday: bool = False, has_time_off: bool = False,
                                     night_hours: float = 0.0) -> Dict:
+        """
+        Mantengo por compatibilidad, pero la rama de sábado ahora se maneja en process_employee_data
+        con cortes por intervalo. Para Lun–Vie usa extras_al_50 de config.
+        """
         if hours_worked == 0:
             return {
                 'hours_worked': 0.0,
@@ -337,36 +396,25 @@ class ArgentineHoursCalculator:
             }
 
         day_of_week = date.weekday()  # 0=Lun … 6=Dom
-        regular_hours = 0.0
-        extra_hours_50 = 0.0
-        extra_hours_100 = 0.0
-        pending_hours = 0.0
+        if day_of_week == 6:
+            return {
+                'hours_worked': float(hours_worked),
+                'regular_hours': 0.0,
+                'extra_hours_50': 0.0,
+                'extra_hours_100': float(hours_worked),
+                'night_hours': float(night_hours),
+                'pending_hours': 0.0
+            }
 
-        if day_of_week == 6:  # Domingo
-            extra_hours_100 = hours_worked
-        elif day_of_week == 5:  # Sábado (simplificado)
-            extra_hours_50 = hours_worked
-        else:  # Lun–Vie
-            if hours_worked <= self.jornada_completa:
-                regular_hours = hours_worked
-                if not has_time_off and hours_worked < self.jornada_completa:
-                    pending_hours = self.jornada_completa - hours_worked
-            else:
-                regular_hours = float(self.jornada_completa)
-                extra = hours_worked - self.jornada_completa
-                if extra <= 2:
-                    extra_hours_50 = extra
-                else:
-                    extra_hours_50 = 2.0
-                    extra_hours_100 = extra - 2.0
-
+        # Lun–Vie (y sábado simplificado antiguo eliminado)
+        dist = self._weekday_distribution(float(hours_worked), has_time_off)
         return {
             'hours_worked': float(hours_worked),
-            'regular_hours': float(regular_hours),
-            'extra_hours_50': float(extra_hours_50),
-            'extra_hours_100': float(extra_hours_100),
+            'regular_hours': float(dist['regular']),
+            'extra_hours_50': float(dist['extra50']),
+            'extra_hours_100': float(dist['extra100']),
             'night_hours': float(night_hours),
-            'pending_hours': float(pending_hours)
+            'pending_hours': float(dist['pending'])
         }
 
     # -------------------- Otras utilidades --------------------
@@ -420,7 +468,7 @@ class ArgentineHoursCalculator:
         return math.ceil(minutes / self.fragmento_minutos) * self.fragmento_minutos
 
 
-# Compatibilidad
+# Funciones de compatibilidad
 def process_employee_data_from_day_summaries(day_summaries: List[Dict], employee_info: Dict,
                                              previous_pending_hours: float = 0,
                                              period_dates: Dict = None, holidays: Optional[Set[str]] = None) -> Dict:
