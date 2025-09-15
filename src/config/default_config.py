@@ -36,21 +36,20 @@ HOLIDAY_NAMES_2025 = {
     "2025-03-24": "Día Nacional de la Memoria por la Verdad y la Justicia",
     "2025-04-02": "Día del Veterano y de los Caídos en la Guerra de Malvinas",
     "2025-04-18": "Viernes Santo",
-    "2025-04-24": "Día de Acción por la Tolerancia y el Respeto entre los Pueblos",
+    "2025-04-24": "Día de acción por la tolerancia y el respeto entre los pueblos",
     "2025-05-01": "Día del Trabajo",
     "2025-05-25": "Primer Gobierno Patrio",
-    "2025-06-16": "Conmemoración de Martín Miguel de Güemes",
-    "2025-06-20": "Paso a la Inmortalidad de Manuel Belgrano",
+    "2025-06-16": "Conmemoración de General Don Martín Miguel de Güemes",
+    "2025-06-20": "Paso a la Inmortalidad del General Manuel Belgrano",
     "2025-07-09": "Día de la Independencia",
-    "2025-08-17": "Paso a la Inmortalidad de José de San Martín",
-    "2025-09-04": "Día del Animal",
-    "2025-09-26": "Día del Empleado de Comercio",
-    "2025-10-12": "Día del Respeto a la Diversidad Cultural",
+    "2025-08-17": "Paso a la Inmortalidad del General José de San Martín",
+    "2025-09-29": "Día del Empleado de Comercio",
+    "2025-10-10": "Día de la Raza",
     "2025-11-24": "Día de la Soberanía Nacional",
     "2025-12-08": "Inmaculada Concepción de María",
-    "2025-12-25": "Navidad",
-    "2025-09-11": "feriado prueba",
+    "2025-12-25": "Navidad"
 }
+
 
 DEFAULT_CONFIG = {
     # API
