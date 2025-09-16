@@ -19,6 +19,9 @@ HOLIDAYS_2025 = [
     "2025-06-20",  # Belgrano
     "2025-07-09",  # Independencia
     "2025-08-17",  # San Martín
+    #"2025-09-04",  # Día del Animal (tu caso)
+    #"2025-09-10", # feriado prueba
+    
     "2025-09-26",  # Empleado de Comercio
     "2025-10-12",  # Diversidad Cultural
     "2025-11-24",  # Soberanía Nacional
@@ -28,6 +31,7 @@ HOLIDAYS_2025 = [
 
 # Mapa de nombres de feriados (para que no salga N/A)
 HOLIDAY_NAMES_2025 = {
+    #"2025-09-10": "Feriado prueba",
     "2025-01-01": "Año Nuevo",
     "2025-03-03": "Carnaval",
     "2025-03-04": "Carnaval",
