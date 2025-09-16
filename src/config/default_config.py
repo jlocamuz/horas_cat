@@ -19,8 +19,6 @@ HOLIDAYS_2025 = [
     "2025-06-20",  # Belgrano
     "2025-07-09",  # Independencia
     "2025-08-17",  # San Martín
-    "2025-09-04",  # Día del Animal (tu caso)
-    "2025-09-11", # feriado prueba
     "2025-09-26",  # Empleado de Comercio
     "2025-10-12",  # Diversidad Cultural
     "2025-11-24",  # Soberanía Nacional
