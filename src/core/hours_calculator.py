@@ -167,6 +167,12 @@ class ArgentineHoursCalculator:
 
         holiday_dates = set(holidays) if holidays else set(DEFAULT_CONFIG.get('holidays', []))
 
+        turno = ''
+
+        for seg in employee_info.get("segmentations", []):
+            if seg.get("group") == "Turno":
+                turno = seg['item']
+                employee_info["turno"] = turno
         daily_data: List[Dict] = []
         totals = {
             'total_days_worked': 0.0,
@@ -180,6 +186,8 @@ class ArgentineHoursCalculator:
         }
 
         for day_summary in day_summaries:
+            
+                      
             ref_str = self._get_ref_str(day_summary)
             if not ref_str:
                 continue
@@ -359,6 +367,7 @@ class ArgentineHoursCalculator:
                 'is_full_time': hours_worked >= self.jornada_completa,
                 'shift_start': " ".join([disp_start_d, disp_start_h]).strip(),  # NUEVO
                 'shift_end':   " ".join([disp_end_d,   disp_end_h]).strip(),    # NUEVO
+                'turno': turno,
                 'calc_note': calc_note,
             })
 

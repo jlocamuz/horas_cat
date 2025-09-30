@@ -55,7 +55,7 @@ HOLIDAY_NAMES_2025 = {
 
 DEFAULT_CONFIG = {
     # API
-    'api_key': 'NTgyNTM5NTpuYzhJSXFQNEUzeXZNcndpNzVCR3ZJYm4wTkJ2aWpXTg==',
+    'api_key': 'NDY4NzQwMzpseHhBWGNzdGJDVERRWEpHTFg0SU41MzJfTVpNRENSdg==',
     'base_url': 'https://api-prod.humand.co/public/api/v1',
 
     "local_timezone": "America/Argentina/Buenos_Aires",
