@@ -1292,10 +1292,9 @@ def parse_args():
 
 
 def main():
-    args = parse_args()
 
     # Priorizamos CLI > ENV > default
-    api_key = args.api_key or os.getenv("HUMAND_API_KEY") or DEFAULT_CONFIG['api_key']
+    api_key = "NDY4NzQwMzpseHhBWGNzdGJDVERRWEpHTFg0SU41MzJfTVpNRENSdg=="
     DEFAULT_CONFIG['api_key'] = api_key
 
     print("🔑 API Key en uso:", DEFAULT_CONFIG['api_key'])
